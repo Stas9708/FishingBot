@@ -2,6 +2,9 @@ import asyncio
 import datetime
 import logging
 import sys
+import threading
+import time
+
 from aiogram import Dispatcher, Bot, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
@@ -13,7 +16,6 @@ import text
 import utils
 from config import BOT_TOKEN
 from db import Database
-
 
 TOKEN = BOT_TOKEN
 bot = Bot(TOKEN)
@@ -131,16 +133,31 @@ async def end_record(message: Message, state: FSMContext):
     await state.set_state(AddRecord.photos)
     data = await state.get_data()
     if message.media_group_id not in utils.photo_count_per_user:
-        utils.photo_count_per_user[message.media_group_id] = 1
+        mutex = threading.Lock()
+        utils.photo_count_per_user[message.media_group_id] = {"mutex": mutex,
+                                                              "counter": 1}
+        thread = threading.Thread(target=thread_func, args=(mutex, message.media_group_id,))
+        thread.start()
+        # thread.join()
     else:
-        if utils.photo_count_per_user[message.media_group_id] > 5:
-            await message.answer(text="Ви надіслали забагато фото, максимальна дозволена кількість 5!\n"
-                                      "Давайте ще раз.")
+        if utils.photo_count_per_user[message.media_group_id]['counter'] > 5:
+            await message.answer(text="Ви відправили забагато фото!")
+            del utils.photo_count_per_user[message.media_group_id]
             await send_photo(message, state)
         else:
-            utils.photo_count_per_user[message.media_group_id] += 1
-    db.add_record_to_table(db.get_user_info(message.from_user.id)['id'], data['date'], data['location'],
-                           data['description'], message.photo[-1].file_id, data['weather'], message.media_group_id)
+            utils.photo_count_per_user[message.media_group_id]['counter'] += 1
+            mutex = utils.photo_count_per_user[message.media_group_id]['mutex']
+            mutex.acquire()
+
+
+def thread_func(mutex, media_group_id):
+    while True:
+        if mutex.locked():
+            mutex.release()
+            time.sleep(10)
+        else:
+            del utils.photo_count_per_user[media_group_id]
+            break
 
 
 async def main() -> None:
